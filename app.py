@@ -110,10 +110,13 @@ def ImageEdit(img, prompt, model_index):
     mask = img["mask"]
 
     if image is None or mask is None:
-        raise gr.Error("Загрузите изображение и выделите область редактирования.")
+        raise gr.Error("Сначала загрузите изображение и выделите область редактирования.")
 
     image = np.array(image, dtype=np.uint8)
     mask = np.array(mask, dtype=np.uint8)
+
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise gr.Error("Ожидается цветное RGB-изображение.")
 
     h, w, _ = image.shape
     h8 = max(8, (h // 8) * 8)
@@ -146,9 +149,10 @@ def ImageEdit(img, prompt, model_index):
     mask_float = np.array(mask_pil.resize((w, h))).astype(np.float32) / 255.0
     mask_float = np.expand_dims(mask_float, axis=-1)
 
-    received_image = image_float * (1 - mask_float) + image_inpaint * mask_float
+    received_image = image_float * (1.0 - mask_float) + image_inpaint * mask_float
+    received_image_uint8 = (np.clip(received_image, 0, 1) * 255).astype(np.uint8)
 
-    return received_image, received_image, received_image
+    return received_image_uint8, received_image_uint8, received_image_uint8
 
 
 def image_model_select(ckp_index=0):
@@ -173,10 +177,23 @@ def wam_model_select(ckp_index=0):
     return wam
 
 def revealing(image_edited, model_list, model):
+    if model is None:
+        raise gr.Error("Модель ещё не загружена. Подождите и повторите попытку.")
 
-    steg = image_edited / 255.
-    steg = torch.from_numpy(steg).permute(2,0,1).unsqueeze(0).float().to(device)
-    
+    if image_edited is None:
+        raise gr.Error("Сначала выполните шаг 2 или загрузите изображение для проверки.")
+
+    image_edited = np.array(image_edited)
+
+    if image_edited.dtype != np.uint8:
+        if image_edited.max() <= 1.0:
+            image_edited = (np.clip(image_edited, 0, 1) * 255).astype(np.uint8)
+        else:
+            image_edited = np.clip(image_edited, 0, 255).astype(np.uint8)
+
+    steg = image_edited.astype(np.float32) / 255.0
+    steg = torch.from_numpy(steg).permute(2, 0, 1).unsqueeze(0).float().to(device)
+
     mask = EditGuard_Reveal(model, steg)
     mask = mask.permute(0, 2, 3, 1).cpu().squeeze().numpy() * 255
     mask = Image.fromarray(mask.astype(np.uint8))
@@ -251,7 +268,12 @@ with gr.Blocks(css=css, title="OmniGuard — защита изображений
             save_inpainted_image = gr.State(value=None)
             with gr.Column():
                 with gr.Row():
-                    model_list = gr.Dropdown(label="Выбор модели", choices=["OmniGuard"], type='index')
+                    model_list = gr.Dropdown(
+                        label="Выбор модели",
+                        choices=["OmniGuard"],
+                        value="OmniGuard",
+                        type='index'
+                    )
                     clear_button = gr.Button("Очистить всё")
                 with gr.Box():
                     gr.Markdown("# 1. Встраивание водяного знака")
@@ -279,7 +301,12 @@ with gr.Blocks(css=css, title="OmniGuard — защита изображений
                     gr.Markdown("# 3. Извлечение водяного знака и поиск правок")
                     with gr.Row():
                         with gr.Column():
-                            image_edited_1 = gr.Image(source="upload", label="Изображение для проверки", interactive=True, type="numpy")
+                            image_edited_1 = gr.Image(
+                                source="upload",
+                                label="Изображение для проверки (заполняется автоматически после шага 2)",
+                                interactive=True,
+                                type="numpy"
+                            )
                             
                             revealing_button = gr.Button("Извлечь и проверить")
                         with gr.Column():
@@ -291,6 +318,11 @@ with gr.Blocks(css=css, title="OmniGuard — защита изображений
                         )
 
 
+                demo.load(
+                    image_model_select,
+                    inputs=[model_list],
+                    outputs=[model]
+                )
                 model_list.change(
                     image_model_select, inputs = [model_list], outputs=[model]
                     )
@@ -304,8 +336,10 @@ with gr.Blocks(css=css, title="OmniGuard — защита изображений
                     )
 
                 revealing_button.click(
-    revealing, inputs=[image_edited, model_list, model], outputs=[edit_mask]
-)
+                    revealing,
+                    inputs=[image_edited_1, model_list, model],
+                    outputs=[edit_mask]
+                )
 
 
 demo.launch(server_name="0.0.0.0", server_port=10049, share=True, favicon_path='logo.png')
