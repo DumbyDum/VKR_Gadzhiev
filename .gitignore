@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+checkpoint/
+*.pt
+*.pth
+*.ckpt
+
+.gradio/
+.cache/
